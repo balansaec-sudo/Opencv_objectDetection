@@ -5,13 +5,28 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import threading
+import pytesseract
+from pytesseract import Output
+
+# Set Tesseract path (adjust if installed elsewhere)
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Load YOLO model
-net = cv2.dnn.readNet("yolov3-tiny.weights", "yolov3-tiny.cfg")
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+if not os.path.exists("yolov3-tiny.weights") or not os.path.exists("yolov3-tiny.cfg"):
+    messagebox.showerror("Error", "YOLO model files not found.")
+    exit(1)
+try:
+    net = cv2.dnn.readNet("yolov3-tiny.weights", "yolov3-tiny.cfg")
+    layer_names = net.getLayerNames()
+    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+except Exception as e:
+    messagebox.showerror("Error", f"Failed to load YOLO model: {e}")
+    exit(1)
 
 # Load classes
+if not os.path.exists("coco.names"):
+    messagebox.showerror("Error", "coco.names file not found.")
+    exit(1)
 with open("coco.names", "r") as f:
     classes = [line.strip() for line in f.readlines()]
 
@@ -29,7 +44,7 @@ def detect_objects(img):
             scores = detection[5:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
-            if confidence > 0.5:
+            if confidence > 0.2:
                 center_x = int(detection[0] * width)
                 center_y = int(detection[1] * height)
                 w = int(detection[2] * width)
@@ -40,7 +55,7 @@ def detect_objects(img):
                 confidences.append(float(confidence))
                 class_ids.append(class_id)
 
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.2, 0.4)
     detected_objects = []
     for i in range(len(boxes)):
         if i in indexes:
@@ -49,22 +64,52 @@ def detect_objects(img):
             detected_objects.append(label)
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(img, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    return img, detected_objects
+    detected_text = ""
+    try:
+        detected_text = pytesseract.image_to_string(img)
+        # Draw text boxes
+        data = pytesseract.image_to_data(img, output_type=Output.DICT)
+        for i in range(len(data['text'])):
+            if int(data['conf'][i]) > 60:
+                x = data['left'][i]
+                y = data['top'][i]
+                w = data['width'][i]
+                h = data['height'][i]
+                text = data['text'][i]
+                cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                cv2.putText(img, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    except Exception as e:
+        detected_text = ""
+        messagebox.showwarning("Warning", f"Text detection failed: {e}. Ensure Tesseract is installed and in PATH.")
+    return img, detected_objects, detected_text
+
+def is_dark(img, threshold=50):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mean_brightness = np.mean(gray)
+    return mean_brightness < threshold
+
+def is_blur(img, threshold=100):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return laplacian_var < threshold
 
 def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
     all_detected = set()
+    detected_text = ""
     frame_count = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         frame_count += 1
-        if frame_count % 30 == 0:  # Process every 30th frame to speed up
-            _, detected = detect_objects(frame)
+        if frame_count % 30 == 0:  # Process every 30th frame
+            _, detected, text = detect_objects(frame)
             all_detected.update(detected)
+            if text.strip() and not detected_text:  # Take first non-empty text
+                detected_text = text.strip()
     cap.release()
-    return list(all_detected)
+    return list(all_detected), detected_text
 
 def simple_nlp_response(query, detected):
     query_lower = query.lower()
@@ -91,8 +136,14 @@ class ChatbotGUI:
         self.image_label = tk.Label(root)
         self.image_label.pack(pady=10)
 
-        self.response_label = tk.Label(root, text="Welcome! Select an image or video to analyze.", wraplength=800, justify="left")
-        self.response_label.pack(pady=10)
+        # Response text with scrollbar
+        self.response_frame = tk.Frame(root)
+        self.response_frame.pack(pady=10)
+        self.response_text = tk.Text(self.response_frame, height=10, wrap=tk.WORD)
+        self.scrollbar = tk.Scrollbar(self.response_frame, command=self.response_text.yview)
+        self.response_text.config(yscrollcommand=self.scrollbar.set)
+        self.response_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.query_entry = tk.Entry(root, width=50)
         self.query_entry.pack(pady=5)
@@ -111,6 +162,8 @@ class ChatbotGUI:
         self.quit_button.pack(pady=10)
 
         self.detected_objects = []
+        self.is_dark = False
+        self.is_blur = False
 
     def select_image(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
@@ -120,9 +173,24 @@ class ChatbotGUI:
         if img is None:
             messagebox.showerror("Error", "Invalid image file.")
             return
-        processed_img, detected = detect_objects(img)
+        self.is_dark = is_dark(img)
+        self.is_blur = is_blur(img)
+        if self.is_dark:
+            img = cv2.convertScaleAbs(img, alpha=1.5, beta=50)  # Brighten dark images
+        processed_img, detected, text = detect_objects(img)
         self.detected_objects = detected
-        self.response_label.config(text="Image processed. Ask me a question!")
+        dark_msg = "Image appears dark, detection may be unreliable." if self.is_dark else ""
+        blur_msg = "Image appears blurred, detection may be unreliable." if self.is_blur else ""
+        warnings = [dark_msg, blur_msg]
+        warnings = [w for w in warnings if w]
+        warning_msg = " ".join(warnings) if warnings else ""
+        detected_msg = f"Detected objects: {', '.join(detected)}." if detected else "No objects detected."
+        if "person" in detected:
+            detected_msg += " (Includes persons/humans detected.)"
+        if text.strip():
+            detected_msg += f" Detected text: {text.strip()}."
+        auto_response = simple_nlp_response("What do you see?", detected)
+        self.response_label.config(text=f"Image processed. {detected_msg} {warning_msg} {auto_response}")
 
         # Display image
         processed_img = cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB)
@@ -138,9 +206,15 @@ class ChatbotGUI:
             return
         self.response_label.config(text="Processing video... Please wait.")
         self.root.update()
-        detected = process_video(file_path)
+        detected, text = process_video(file_path)
         self.detected_objects = detected
-        self.response_label.config(text="Video processed. Ask me a question!")
+        detected_msg = f"Detected objects: {', '.join(detected)}." if detected else "No objects detected."
+        if "person" in detected:
+            detected_msg += " (Includes persons/humans detected.)"
+        if text.strip():
+            detected_msg += f" Detected text: {text.strip()}."
+        auto_response = simple_nlp_response("What do you see?", detected)
+        self.response_label.config(text=f"Video processed. {detected_msg} {auto_response}")
         self.image_label.config(image='')  # Clear image
 
     def ask_question(self):

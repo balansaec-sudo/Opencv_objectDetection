@@ -1,3 +1,4 @@
 opencv-python
 pyttsx3
 mediapipe
+pytesseract
