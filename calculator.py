@@ -1,9 +1,10 @@
+
 import tkinter as tk
 
 # Create main window
 root = tk.Tk()
 root.title("Calculator")
-root.geometry("300x400")
+root.geometry("350x350")
 
 # Entry box
 entry = tk.Entry(root, width=25, borderwidth=5, font=("Arial", 16))

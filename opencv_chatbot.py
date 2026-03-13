@@ -136,14 +136,14 @@ class ChatbotGUI:
         self.image_label = tk.Label(root)
         self.image_label.pack(pady=10)
 
-        # Response text with scrollbar
+        ''' Response text with scrollbar
         self.response_frame = tk.Frame(root)
         self.response_frame.pack(pady=10)
         self.response_text = tk.Text(self.response_frame, height=10, wrap=tk.WORD)
-        self.scrollbar = tk.Scrollbar(self.response_frame, command=self.response_text.yview)
-        self.response_text.config(yscrollcommand=self.scrollbar.set)
+        #self.scrollbar = tk.Scrollbar(self.response_frame, command=self.response_text.yview)
+        #self.response_text.config(yscrollcommand=self.scrollbar.set)
         self.response_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        #self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)'''
 
         self.query_entry = tk.Entry(root, width=50)
         self.query_entry.pack(pady=5)
